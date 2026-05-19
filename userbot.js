@@ -1,4 +1,4 @@
-const { TelegramClient } = require('telegram'); // 'Const' -> 'const' ga tuzatildi
+const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const { Api } = require('telegram');
 const db = require('./database');
@@ -15,17 +15,19 @@ class UserSession {
     this.client = null;
   }
 
-  // Clientni yaratish
+  // Clientni yaratish yoki mavjudini qaytarish
   async _getClient(sessionString = '') {
-    // Agar client mavjud bo'lsa va ulanish ochiq bo'lsa, qaytaramiz
     if (this.client && this.client.connected) return this.client;
 
     const session = new StringSession(sessionString);
+    
+    // Render.com uchun optimallashtirilgan sozlamalar
     this.client = new TelegramClient(session, API_ID, API_HASH, {
-      connectionRetries: 5,
-      retryDelay: 1000,
-      autoReconnect: true,
-      // useWSS o'rniga oddiy ulanish ishonchliroq ishlaydi (serverda)
+      connectionRetries: 15, // Ulanish urinishlarini ko'paytirdik
+      retryDelay: 2000,      // Har bir urinish orasidagi vaqt
+      autoReconnect: true,   // Uzilib qolsa o'zi qayta ulanadi
+      useWSS: false,         // Renderda false ishonchliroq ishlaydi
+      floodSleepThreshold: 60, // FloodWait xatolarida 60 soniyagacha kutishga ruxsat
     });
 
     return this.client;
@@ -47,6 +49,10 @@ class UserSession {
       }
     } catch (err) {
       console.error(`[UserSession] Reconnect xato (${this.userId}):`, err.message);
+      // Agar session muddati o'tgan bo'lsa DB dan o'chirib tashlaymiz
+      if (err.message.includes('AUTH_KEY_UNREGISTERED')) {
+        db.deleteSession(this.userId);
+      }
     }
     return false;
   }
@@ -73,7 +79,6 @@ class UserSession {
   // Kodni tekshirish va kirish
   async signIn(phone, code) {
     try {
-      // SignIn funksiyasini kutubxonaning o'z metodidan foydalanish qulayroq
       await this.client.invoke(
         new Api.auth.SignIn({
           phoneNumber: phone,
@@ -86,7 +91,7 @@ class UserSession {
       await this._saveSession();
       return true;
     } catch (err) {
-      // Agar 2FA so'rasa, xatoni tashqariga otamiz (SESSION_PASSWORD_NEEDED)
+      // 2FA paroli kerak bo'lsa bu xato index.js ga boradi
       throw err;
     }
   }
@@ -113,7 +118,6 @@ class UserSession {
   // Sessionni DB ga saqlash
   async _saveSession() {
     try {
-      // GramJS da sessionni save() qilishdan oldin client ulangan bo'lishi kerak
       const sessionString = this.client.session.save();
       db.saveSession(this.userId, sessionString, this.phone);
     } catch (err) {
@@ -144,10 +148,11 @@ class UserSession {
     db.deleteSession(this.userId);
   }
 
-  // Dialoglarni olish
+  // Dialoglarni olish (Kanal, Guruh, Bot)
   async getDialogs(type) {
     if (!this.client) return [];
     
+    // Ko'p dialogli akkauntlar uchun limitni oshirish mumkin
     const allDialogs = await this.client.getDialogs({ limit: 500 });
     const results = [];
 
@@ -183,13 +188,13 @@ class UserSession {
     return results;
   }
 
-  // Dialogdan chiqish yoki tozalash
+  // Dialogdan chiqish
   async leaveDialog(id) {
     try {
       const entity = await this.client.getEntity(id);
 
       if (entity.className === 'User') {
-        // Bot bo'lsa — dialogni o'chirib, bloklaymiz
+        // Bot bo'lsa — tarixni tozalab bloklaymiz
         await this.client.invoke(new Api.messages.DeleteHistory({
           peer: entity,
           maxId: 0,
@@ -197,7 +202,7 @@ class UserSession {
         }));
         await this.client.invoke(new Api.contacts.Block({ id: entity }));
       } else if (entity.className === 'Chat') {
-        // Oddiy guruh (eski tip)
+        // Oddiy guruh
         await this.client.invoke(new Api.messages.DeleteChatUser({
           chatId: entity.id,
           userId: 'me',
@@ -212,7 +217,7 @@ class UserSession {
       db.addStat(this.userId, 'leave');
       return true;
     } catch (err) {
-      console.error(`[LeaveDialog] Xato: ${id}`, err.message);
+      console.error(`[LeaveDialog] Xato ID: ${id} ->`, err.message);
       throw err;
     }
   }
