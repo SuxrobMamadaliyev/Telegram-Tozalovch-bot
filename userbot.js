@@ -21,13 +21,12 @@ class UserSession {
 
     const session = new StringSession(sessionString);
     
-    // Render.com uchun optimallashtirilgan sozlamalar
     this.client = new TelegramClient(session, API_ID, API_HASH, {
-      connectionRetries: 15, // Ulanish urinishlarini ko'paytirdik
-      retryDelay: 2000,      // Har bir urinish orasidagi vaqt
-      autoReconnect: true,   // Uzilib qolsa o'zi qayta ulanadi
-      useWSS: false,         // Renderda false ishonchliroq ishlaydi
-      floodSleepThreshold: 60, // FloodWait xatolarida 60 soniyagacha kutishga ruxsat
+      connectionRetries: 15,
+      retryDelay: 2000,
+      autoReconnect: true,
+      useWSS: false,
+      floodSleepThreshold: 60,
     });
 
     return this.client;
@@ -49,7 +48,6 @@ class UserSession {
       }
     } catch (err) {
       console.error(`[UserSession] Reconnect xato (${this.userId}):`, err.message);
-      // Agar session muddati o'tgan bo'lsa DB dan o'chirib tashlaymiz
       if (err.message.includes('AUTH_KEY_UNREGISTERED')) {
         db.deleteSession(this.userId);
       }
@@ -91,7 +89,6 @@ class UserSession {
       await this._saveSession();
       return true;
     } catch (err) {
-      // 2FA paroli kerak bo'lsa bu xato index.js ga boradi
       throw err;
     }
   }
@@ -143,16 +140,20 @@ class UserSession {
         await this.client.disconnect();
         this.client = null;
       }
-    } catch {}
+    } catch (err) {
+      console.error('[UserSession] Disconnect xato:', err.message);
+    }
     this._authorized = false;
     db.deleteSession(this.userId);
   }
 
   // Dialoglarni olish (Kanal, Guruh, Bot)
   async getDialogs(type) {
-    if (!this.client) return [];
+    if (!this.client || !this.client.connected) {
+        const ok = await this.reconnect();
+        if (!ok) return [];
+    }
     
-    // Ko'p dialogli akkauntlar uchun limitni oshirish mumkin
     const allDialogs = await this.client.getDialogs({ limit: 500 });
     const results = [];
 
@@ -191,10 +192,11 @@ class UserSession {
   // Dialogdan chiqish
   async leaveDialog(id) {
     try {
+      // ID ni to'g'ri formatda olish
       const entity = await this.client.getEntity(id);
 
       if (entity.className === 'User') {
-        // Bot bo'lsa — tarixni tozalab bloklaymiz
+        // Bot bo'lsa — tarixni o'chirib bloklash
         await this.client.invoke(new Api.messages.DeleteHistory({
           peer: entity,
           maxId: 0,
