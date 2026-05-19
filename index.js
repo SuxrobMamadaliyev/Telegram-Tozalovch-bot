@@ -101,15 +101,20 @@ bot.start(async (ctx) => {
   db.saveUser(id, username, first_name, last_name, db.getLang(id) || 'uz');
 
   // Obuna tekshirish
+      // ... (oldingi kodlar)
   if (REQUIRED_CHANNEL && !(await checkSubscription(ctx))) {
     return ctx.reply(
       L(id).subscribe_required(REQUIRED_CHANNEL),
       Markup.inlineKeyboard([
-        [Markup.button.url('📢 Kanalga o\'tish', `https://t.me/${REQUIRED_CHANNEL.replace('@', '')}}`)],
+        // BU YERDA ORTIQCHA } BELGISI OLIB TASHLANDI
+        [Markup.button.url('📢 Kanalga o\'tish', `https://t.me/${REQUIRED_CHANNEL.replace('@', '')}`)],
         [Markup.button.callback(L(id).check_sub, 'check_sub')],
       ])
     );
   }
+// ... (qolgan kodlar)
+
+
 
   const name = first_name || 'Foydalanuvchi';
   await ctx.reply(L(id).welcome(name), { parse_mode: 'Markdown', ...langKeyboard() });
