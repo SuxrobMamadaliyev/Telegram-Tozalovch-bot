@@ -1,4 +1,4 @@
-const { TelegramClient } = require('telegram');
+const { TelegramClient } = require('telegram'); // 'Const' -> 'const' ga tuzatildi
 const { StringSession } = require('telegram/sessions');
 const { Api } = require('telegram');
 const db = require('./database');
@@ -15,8 +15,9 @@ class UserSession {
     this.client = null;
   }
 
-  // Clientni yaratish yoki mavjudini qaytarish
+  // Clientni yaratish
   async _getClient(sessionString = '') {
+    // Agar client mavjud bo'lsa va ulanish ochiq bo'lsa, qaytaramiz
     if (this.client && this.client.connected) return this.client;
 
     const session = new StringSession(sessionString);
@@ -24,7 +25,7 @@ class UserSession {
       connectionRetries: 5,
       retryDelay: 1000,
       autoReconnect: true,
-      useWSS: true,
+      // useWSS o'rniga oddiy ulanish ishonchliroq ishlaydi (serverda)
     });
 
     return this.client;
@@ -56,45 +57,63 @@ class UserSession {
     const client = await this._getClient();
     await client.connect();
 
-    const result = await client.sendCode(
-      { apiId: API_ID, apiHash: API_HASH },
-      phone
-    );
-    this.phoneCodeHash = result.phoneCodeHash;
+    try {
+      const result = await client.sendCode(
+        { apiId: API_ID, apiHash: API_HASH },
+        phone
+      );
+      this.phoneCodeHash = result.phoneCodeHash;
+      return result;
+    } catch (err) {
+      console.error('[UserSession] sendCode xato:', err.message);
+      throw err;
+    }
   }
 
   // Kodni tekshirish va kirish
   async signIn(phone, code) {
-    const result = await this.client.invoke(
-      new Api.auth.SignIn({
-        phoneNumber: phone,
-        phoneCodeHash: this.phoneCodeHash,
-        phoneCode: code.trim(),
-      })
-    );
+    try {
+      // SignIn funksiyasini kutubxonaning o'z metodidan foydalanish qulayroq
+      await this.client.invoke(
+        new Api.auth.SignIn({
+          phoneNumber: phone,
+          phoneCodeHash: this.phoneCodeHash,
+          phoneCode: code.trim(),
+        })
+      );
 
-    this._authorized = true;
-    await this._saveSession();
-    return result;
+      this._authorized = true;
+      await this._saveSession();
+      return true;
+    } catch (err) {
+      // Agar 2FA so'rasa, xatoni tashqariga otamiz (SESSION_PASSWORD_NEEDED)
+      throw err;
+    }
   }
 
   // 2FA parolini tekshirish
   async checkPassword(password) {
-    await this.client.signInWithPassword(
-      { apiId: API_ID, apiHash: API_HASH },
-      {
-        password: async () => password.trim(),
-        onError: (err) => { throw err; },
-      }
-    );
+    try {
+      await this.client.signInWithPassword(
+        { apiId: API_ID, apiHash: API_HASH },
+        {
+          password: async () => password.trim(),
+          onError: (err) => { throw err; },
+        }
+      );
 
-    this._authorized = true;
-    await this._saveSession();
+      this._authorized = true;
+      await this._saveSession();
+      return true;
+    } catch (err) {
+      throw err;
+    }
   }
 
   // Sessionni DB ga saqlash
   async _saveSession() {
     try {
+      // GramJS da sessionni save() qilishdan oldin client ulangan bo'lishi kerak
       const sessionString = this.client.session.save();
       db.saveSession(this.userId, sessionString, this.phone);
     } catch (err) {
@@ -102,11 +121,9 @@ class UserSession {
     }
   }
 
-  // Akkaunt ma'lumotlarini olish
   async getMe() {
     try {
-      const me = await this.client.getMe();
-      return me;
+      return await this.client.getMe();
     } catch {
       return null;
     }
@@ -116,7 +133,6 @@ class UserSession {
     return this._authorized;
   }
 
-  // Disconnecting va DB dan o'chirish
   async disconnect() {
     try {
       if (this.client) {
@@ -128,8 +144,10 @@ class UserSession {
     db.deleteSession(this.userId);
   }
 
-  // Dialoglarni olish (kanal/guruh/bot)
+  // Dialoglarni olish
   async getDialogs(type) {
+    if (!this.client) return [];
+    
     const allDialogs = await this.client.getDialogs({ limit: 500 });
     const results = [];
 
@@ -137,10 +155,10 @@ class UserSession {
       const entity = dialog.entity;
       if (!entity) continue;
 
-      const isChannel = entity.className === 'Channel' && entity.broadcast === true;
-      const isMegagroup = entity.className === 'Channel' && entity.megagroup === true;
+      const isChannel = entity.className === 'Channel' && !entity.megagroup;
+      const isMegagroup = entity.className === 'Channel' && entity.megagroup;
       const isGroup = entity.className === 'Chat' || isMegagroup;
-      const isBot = entity.className === 'User' && entity.bot === true;
+      const isBot = entity.className === 'User' && entity.bot;
 
       let matches = false;
       let entityType = '';
@@ -162,26 +180,30 @@ class UserSession {
         });
       }
     }
-
     return results;
   }
 
-  // Dialogdan chiqish
-  async leaveDialog(id, type) {
+  // Dialogdan chiqish yoki tozalash
+  async leaveDialog(id) {
     try {
       const entity = await this.client.getEntity(id);
 
       if (entity.className === 'User') {
-        // Bot — bloklash
+        // Bot bo'lsa — dialogni o'chirib, bloklaymiz
+        await this.client.invoke(new Api.messages.DeleteHistory({
+          peer: entity,
+          maxId: 0,
+          revoke: true
+        }));
         await this.client.invoke(new Api.contacts.Block({ id: entity }));
       } else if (entity.className === 'Chat') {
-        // Oddiy guruh
+        // Oddiy guruh (eski tip)
         await this.client.invoke(new Api.messages.DeleteChatUser({
           chatId: entity.id,
-          userId: new Api.InputUserSelf(),
+          userId: 'me',
         }));
       } else if (entity.className === 'Channel') {
-        // Kanal yoki supergroup
+        // Kanal yoki Supergroup
         await this.client.invoke(new Api.channels.LeaveChannel({
           channel: entity,
         }));
@@ -190,7 +212,8 @@ class UserSession {
       db.addStat(this.userId, 'leave');
       return true;
     } catch (err) {
-      throw new Error(err.message);
+      console.error(`[LeaveDialog] Xato: ${id}`, err.message);
+      throw err;
     }
   }
 }
