@@ -1,15 +1,16 @@
 const Database = require('better-sqlite3');
 const path = require('path');
+const fs = require('fs');
 
-// Render uchun /tmp papkasida saqlash (yoki loyiha ichida)
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'bot.db');
+// Render uchun /tmp papkasidan foydalanamiz (Write access bor joy)
+const DB_PATH = process.env.DB_PATH || '/tmp/bot.db';
 
 const db = new Database(DB_PATH);
 
-// WAL mode - tezroq yozish
-db.pragma('journal_mode = WAL');
+// Render Free tier uchun stabil rejim
+db.pragma('journal_mode = DELETE');
 
-// Jadvallar yaratish
+// Jadvallarni yaratish
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
@@ -41,11 +42,9 @@ db.exec(`
 `);
 
 module.exports = {
-  // Foydalanuvchi olish
   getUser: (id) => db.prepare('SELECT * FROM users WHERE id = ?').get(id),
-
-  // Foydalanuvchini saqlash / yangilash
-  saveUser: (id, username, first_name, last_name, lang = 'uz') => {
+  
+  saveUser: (id, username, first_name, last_name, lang) => {
     db.prepare(`
       INSERT INTO users (id, username, first_name, last_name, lang)
       VALUES (?, ?, ?, ?, ?)
@@ -57,87 +56,49 @@ module.exports = {
     `).run(id, username || '', first_name || '', last_name || '', lang);
   },
 
-  // Oxirgi faollikni yangilash
-  updateActivity: (id) => {
-    db.prepare('UPDATE users SET last_active = datetime("now") WHERE id = ?').run(id);
-  },
-
-  // Til sozlash
+  updateActivity: (id) => db.prepare("UPDATE users SET last_active = datetime('now') WHERE id = ?").run(id),
+  
   setLang: (id, lang) => db.prepare('UPDATE users SET lang = ? WHERE id = ?').run(lang, id),
-
-  // Tilni olish
+  
   getLang: (id) => {
-    const row = db.prepare('SELECT lang FROM users WHERE id = ?').get(id);
-    return row ? row.lang : 'uz';
+    const user = db.prepare('SELECT lang FROM users WHERE id = ?').get(id);
+    return user ? user.lang : 'uz';
   },
 
-  // Barcha faol foydalanuvchilar
-  getAllUsers: () => db.prepare('SELECT * FROM users WHERE blocked = 0 AND is_banned = 0').all(),
-
-  // Foydalanuvchilar soni
-  getUserCount: () => db.prepare('SELECT COUNT(*) as c FROM users WHERE is_banned = 0').get().c,
-
-  // Bugungi yangi foydalanuvchilar
-  getTodayCount: () => db.prepare(
-    "SELECT COUNT(*) as c FROM users WHERE date(joined_at) = date('now') AND is_banned = 0"
-  ).get().c,
-
-  // Faol foydalanuvchilar (oxirgi 24 soat)
-  getActiveCount: () => db.prepare(
-    "SELECT COUNT(*) as c FROM users WHERE last_active > datetime('now', '-24 hours') AND is_banned = 0"
-  ).get().c,
-
-  // Bloklash (bot tomonidan)
-  blockUser: (id) => db.prepare('UPDATE users SET blocked = 1 WHERE id = ?').run(id),
-
-  // Ban qilish (admin tomonidan)
-  banUser: (id) => db.prepare('UPDATE users SET is_banned = 1 WHERE id = ?').run(id),
-
-  // Bandan chiqarish
-  unbanUser: (id) => db.prepare('UPDATE users SET is_banned = 0 WHERE id = ?').run(id),
-
-  // Foydalanuvchi ban ekanligini tekshirish
-  isBanned: (id) => {
-    const row = db.prepare('SELECT is_banned FROM users WHERE id = ?').get(id);
-    return row ? row.is_banned === 1 : false;
-  },
-
-  // Session saqlash (akkaunt ulanganda)
   saveSession: (userId, sessionString, phone) => {
     db.prepare(`
-      INSERT INTO sessions (user_id, session_string, phone, updated_at)
-      VALUES (?, ?, ?, datetime('now'))
+      INSERT INTO sessions (user_id, session_string, phone)
+      VALUES (?, ?, ?)
       ON CONFLICT(user_id) DO UPDATE SET
         session_string = excluded.session_string,
         phone = excluded.phone,
         updated_at = datetime('now')
     `).run(userId, sessionString, phone);
-    db.prepare('UPDATE users SET sessions_count = sessions_count + 1 WHERE id = ?').run(userId);
   },
 
-  // Session olish
   getSession: (userId) => db.prepare('SELECT * FROM sessions WHERE user_id = ?').get(userId),
-
-  // Sessionni o'chirish
+  
   deleteSession: (userId) => db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId),
 
-  // Barcha foydalanuvchilar (admin uchun)
-  getAllUsersAdmin: (limit = 20, offset = 0) => db.prepare(
-    'SELECT * FROM users ORDER BY joined_at DESC LIMIT ? OFFSET ?'
-  ).all(limit, offset),
-
-  // Statistika qo'shish
-  addStat: (userId, action) => {
-    db.prepare('INSERT INTO stats (user_id, action) VALUES (?, ?)').run(userId, action);
+  isBanned: (id) => {
+    const user = db.prepare('SELECT is_banned FROM users WHERE id = ?').get(id);
+    return user ? user.is_banned === 1 : false;
   },
 
-  // Umumiy statistika
   getStats: () => ({
     total: db.prepare('SELECT COUNT(*) as c FROM users WHERE is_banned = 0').get().c,
-    today: db.prepare("SELECT COUNT(*) as c FROM users WHERE date(joined_at) = date('now') AND is_banned = 0").get().c,
-    active: db.prepare("SELECT COUNT(*) as c FROM users WHERE last_active > datetime('now', '-24 hours') AND is_banned = 0").get().c,
-    banned: db.prepare('SELECT COUNT(*) as c FROM users WHERE is_banned = 1').get().c,
     sessions: db.prepare('SELECT COUNT(*) as c FROM sessions').get().c,
-    totalLeaves: db.prepare("SELECT COUNT(*) as c FROM stats WHERE action = 'leave'").get().c,
+    banned: db.prepare('SELECT COUNT(*) as c FROM users WHERE is_banned = 1').get().c,
+    today: db.prepare("SELECT COUNT(*) as c FROM users WHERE date(joined_at) = date('now')").get().c,
+    active: db.prepare("SELECT COUNT(*) as c FROM users WHERE last_active > datetime('now', '-24 hours')").get().c,
+    totalLeaves: db.prepare("SELECT SUM(count) as c FROM stats WHERE action = 'leave'").get().c || 0
   }),
+
+  getAllUsers: () => db.prepare('SELECT id, lang FROM users WHERE is_banned = 0').all(),
+  
+  blockUser: (id) => db.prepare('UPDATE users SET blocked = 1 WHERE id = ?').run(id),
+  
+  banUser: (id) => db.prepare('UPDATE users SET is_banned = 1 WHERE id = ?').run(id),
+  
+  unbanUser: (id) => db.prepare('UPDATE users SET is_banned = 0 WHERE id = ?').run(id)
 };
