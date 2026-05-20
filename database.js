@@ -39,6 +39,13 @@ db.exec(`
     count INTEGER DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS required_channels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL UNIQUE,
+    title TEXT DEFAULT '',
+    type TEXT DEFAULT 'channel'
+  );
 `);
 
 module.exports = {
@@ -96,21 +103,54 @@ module.exports = {
 
   getAllUsers: () => db.prepare('SELECT id, lang FROM users WHERE is_banned = 0').all(),
 
+  // FIX #1: getAllUsersAdmin va getUserCount qo'shildi
+  getAllUsersAdmin: (limit = 10, offset = 0) => {
+    return db.prepare('SELECT id, username, first_name, last_name, is_banned, blocked FROM users ORDER BY joined_at DESC LIMIT ? OFFSET ?').all(limit, offset);
+  },
+
+  getUserCount: () => {
+    return db.prepare('SELECT COUNT(*) as c FROM users').get().c;
+  },
+
+  // FIX #3: addStat — ON CONFLICT DO NOTHING o'rniga INSERT OR IGNORE ishlatildi
   addStat: (userId, action) => {
-    db.prepare(`
-      INSERT INTO stats (user_id, action, count) VALUES (?, ?, 1)
-      ON CONFLICT DO NOTHING
-    `).run(userId, action);
-    // Agar mavjud bo'lsa count ni oshir
-    db.prepare(`
-      UPDATE stats SET count = count + 1
-      WHERE user_id = ? AND action = ? AND date(created_at) = date('now')
-    `).run(userId, action);
+    // Bugun ushbu action uchun yozuv bor-yo'qligini tekshir
+    const existing = db.prepare(
+      "SELECT id FROM stats WHERE user_id = ? AND action = ? AND date(created_at) = date('now')"
+    ).get(userId, action);
+
+    if (existing) {
+      db.prepare(
+        "UPDATE stats SET count = count + 1 WHERE user_id = ? AND action = ? AND date(created_at) = date('now')"
+      ).run(userId, action);
+    } else {
+      db.prepare(
+        'INSERT INTO stats (user_id, action, count) VALUES (?, ?, 1)'
+      ).run(userId, action);
+    }
   },
   
   blockUser: (id) => db.prepare('UPDATE users SET blocked = 1 WHERE id = ?').run(id),
   
   banUser: (id) => db.prepare('UPDATE users SET is_banned = 1 WHERE id = ?').run(id),
   
-  unbanUser: (id) => db.prepare('UPDATE users SET is_banned = 0 WHERE id = ?').run(id)
+  unbanUser: (id) => db.prepare('UPDATE users SET is_banned = 0 WHERE id = ?').run(id),
+
+  // ─── Majburiy obuna kanallari/guruhlari ───────────────────────────
+  getRequiredChannels: () => db.prepare('SELECT * FROM required_channels ORDER BY id ASC').all(),
+
+  addRequiredChannel: (channelId, title, type = 'channel') => {
+    try {
+      db.prepare(
+        'INSERT INTO required_channels (channel_id, title, type) VALUES (?, ?, ?)'
+      ).run(channelId, title || '', type);
+      return true;
+    } catch (e) {
+      return false; // UNIQUE constraint — allaqachon bor
+    }
+  },
+
+  removeRequiredChannel: (id) => {
+    db.prepare('DELETE FROM required_channels WHERE id = ?').run(id);
+  },
 };
