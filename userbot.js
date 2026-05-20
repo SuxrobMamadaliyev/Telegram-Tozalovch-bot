@@ -190,19 +190,31 @@ class UserSession {
   }
 
   // Dialogdan chiqish
-  async leaveDialog(id) {
+  async leaveDialog(id, type) {
     try {
-      // ID ni to'g'ri formatda olish
-      const entity = await this.client.getEntity(id);
+      let entity;
+      try {
+        entity = await this.client.getEntity(id);
+      } catch (e) {
+        // getEntity ishlamasa dialogs dan qidiramiz
+        const dialogs = await this.client.getDialogs({ limit: 500 });
+        const found = dialogs.find(d => d.entity && d.entity.id && d.entity.id.toString() === id.toString());
+        if (!found) throw new Error(`Dialog topilmadi: ${id}`);
+        entity = found.entity;
+      }
 
       if (entity.className === 'User') {
         // Bot bo'lsa — tarixni o'chirib bloklash
-        await this.client.invoke(new Api.messages.DeleteHistory({
-          peer: entity,
-          maxId: 0,
-          revoke: true
-        }));
-        await this.client.invoke(new Api.contacts.Block({ id: entity }));
+        try {
+          await this.client.invoke(new Api.messages.DeleteHistory({
+            peer: entity,
+            maxId: 0,
+            revoke: true
+          }));
+        } catch (e) { /* tarix o'chirilmasa ham davom et */ }
+        try {
+          await this.client.invoke(new Api.contacts.Block({ id: entity }));
+        } catch (e) { /* bloklash xatosi e'tiborga olinmaydi */ }
       } else if (entity.className === 'Chat') {
         // Oddiy guruh
         await this.client.invoke(new Api.messages.DeleteChatUser({
