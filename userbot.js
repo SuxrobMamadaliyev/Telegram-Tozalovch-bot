@@ -147,14 +147,21 @@ class UserSession {
     db.deleteSession(this.userId);
   }
 
-  // Dialoglarni olish (Kanal, Guruh, Bot)
+  // FIX #4: getDialogs — reconnect xato bo'lsa exception otadi (silent fail yo'q)
   async getDialogs(type) {
     if (!this.client || !this.client.connected) {
-        const ok = await this.reconnect();
-        if (!ok) return [];
+      const ok = await this.reconnect();
+      if (!ok) throw new Error('Akkauntga ulanib bo\'lmadi. Iltimos qayta ulang.');
     }
-    
-    const allDialogs = await this.client.getDialogs({ limit: 500 });
+
+    let allDialogs;
+    try {
+      allDialogs = await this.client.getDialogs({ limit: 500 });
+    } catch (err) {
+      console.error(`[UserSession] getDialogs xato (${this.userId}):`, err.message);
+      throw new Error('Dialoglarni olishda xato: ' + err.message);
+    }
+
     const results = [];
 
     for (const dialog of allDialogs) {
