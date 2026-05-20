@@ -2,13 +2,32 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-// Render uchun /tmp papkasidan foydalanamiz (Write access bor joy)
-const DB_PATH = process.env.DB_PATH || '/tmp/bot.db';
+// DB_PATH env dan olinadi.
+// Render'da /tmp restart da o'chadi — persistent disk yo'q bo'lsa
+// loyiha papkasidagi ./data/ ishlatiladi (yoki RENDER_DISK_PATH env bilan override)
+function resolveDbPath() {
+  if (process.env.DB_PATH) return process.env.DB_PATH;
+
+  // Render persistent disk ulangan bo'lsa
+  if (process.env.RENDER_DISK_PATH) {
+    const dir = process.env.RENDER_DISK_PATH;
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return path.join(dir, 'bot.db');
+  }
+
+  // Local / default: loyiha papkasida ./data/bot.db
+  const dir = path.join(__dirname, 'data');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, 'bot.db');
+}
+
+const DB_PATH = resolveDbPath();
+console.log(`[DB] Fayl joyi: ${DB_PATH}`);
 
 const db = new Database(DB_PATH);
 
-// Render Free tier uchun stabil rejim
-db.pragma('journal_mode = DELETE');
+db.pragma('journal_mode = WAL');   // WAL — tezroq va xatosizroq
+db.pragma('synchronous = NORMAL'); // Balans: tezlik + xavfsizlik
 
 // Jadvallarni yaratish
 db.exec(`
@@ -46,11 +65,31 @@ db.exec(`
     title TEXT DEFAULT '',
     type TEXT DEFAULT 'channel'
   );
+
+  CREATE TABLE IF NOT EXISTS bot_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  );
 `);
 
+// .env dagi REQUIRED_CHANNEL ni avtomatik DB ga ko'chirish (bir martalik migration)
+(function migrateEnvChannel() {
+  const envChannel = process.env.REQUIRED_CHANNEL;
+  if (!envChannel) return;
+  const already = db.prepare('SELECT id FROM required_channels WHERE channel_id = ?').get(envChannel);
+  if (!already) {
+    db.prepare('INSERT OR IGNORE INTO required_channels (channel_id, title, type) VALUES (?, ?, ?)').run(
+      envChannel, envChannel, 'channel'
+    );
+    console.log(`[DB] REQUIRED_CHANNEL migratsiya: ${envChannel} qo'shildi`);
+  }
+})();
+
 module.exports = {
+  getDbPath: () => DB_PATH,
+
   getUser: (id) => db.prepare('SELECT * FROM users WHERE id = ?').get(id),
-  
+
   saveUser: (id, username, first_name, last_name, lang) => {
     db.prepare(`
       INSERT INTO users (id, username, first_name, last_name, lang)
@@ -64,14 +103,15 @@ module.exports = {
   },
 
   updateActivity: (id) => db.prepare("UPDATE users SET last_active = datetime('now') WHERE id = ?").run(id),
-  
+
   setLang: (id, lang) => db.prepare('UPDATE users SET lang = ? WHERE id = ?').run(lang, id),
-  
+
   getLang: (id) => {
     const user = db.prepare('SELECT lang FROM users WHERE id = ?').get(id);
     return user ? user.lang : 'uz';
   },
 
+  // ─── Sessionlar ───────────────────────────────────────────────────
   saveSession: (userId, sessionString, phone) => {
     db.prepare(`
       INSERT INTO sessions (user_id, session_string, phone)
@@ -84,73 +124,80 @@ module.exports = {
   },
 
   getSession: (userId) => db.prepare('SELECT * FROM sessions WHERE user_id = ?').get(userId),
-  
+
   deleteSession: (userId) => db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId),
 
+  // ─── Ban ──────────────────────────────────────────────────────────
   isBanned: (id) => {
     const user = db.prepare('SELECT is_banned FROM users WHERE id = ?').get(id);
     return user ? user.is_banned === 1 : false;
   },
 
+  banUser: (id) => db.prepare('UPDATE users SET is_banned = 1 WHERE id = ?').run(id),
+
+  unbanUser: (id) => db.prepare('UPDATE users SET is_banned = 0 WHERE id = ?').run(id),
+
+  blockUser: (id) => db.prepare('UPDATE users SET blocked = 1 WHERE id = ?').run(id),
+
+  // ─── Statistika ───────────────────────────────────────────────────
   getStats: () => ({
     total: db.prepare('SELECT COUNT(*) as c FROM users WHERE is_banned = 0').get().c,
     sessions: db.prepare('SELECT COUNT(*) as c FROM sessions').get().c,
     banned: db.prepare('SELECT COUNT(*) as c FROM users WHERE is_banned = 1').get().c,
     today: db.prepare("SELECT COUNT(*) as c FROM users WHERE date(joined_at) = date('now')").get().c,
     active: db.prepare("SELECT COUNT(*) as c FROM users WHERE last_active > datetime('now', '-24 hours')").get().c,
-    totalLeaves: db.prepare("SELECT SUM(count) as c FROM stats WHERE action = 'leave'").get().c || 0
+    totalLeaves: db.prepare("SELECT SUM(count) as c FROM stats WHERE action = 'leave'").get().c || 0,
   }),
 
   getAllUsers: () => db.prepare('SELECT id, lang FROM users WHERE is_banned = 0').all(),
 
-  // FIX #1: getAllUsersAdmin va getUserCount qo'shildi
   getAllUsersAdmin: (limit = 10, offset = 0) => {
-    return db.prepare('SELECT id, username, first_name, last_name, is_banned, blocked FROM users ORDER BY joined_at DESC LIMIT ? OFFSET ?').all(limit, offset);
+    return db.prepare(
+      'SELECT id, username, first_name, last_name, is_banned, blocked FROM users ORDER BY joined_at DESC LIMIT ? OFFSET ?'
+    ).all(limit, offset);
   },
 
-  getUserCount: () => {
-    return db.prepare('SELECT COUNT(*) as c FROM users').get().c;
-  },
+  getUserCount: () => db.prepare('SELECT COUNT(*) as c FROM users').get().c,
 
-  // FIX #3: addStat — ON CONFLICT DO NOTHING o'rniga INSERT OR IGNORE ishlatildi
   addStat: (userId, action) => {
-    // Bugun ushbu action uchun yozuv bor-yo'qligini tekshir
     const existing = db.prepare(
       "SELECT id FROM stats WHERE user_id = ? AND action = ? AND date(created_at) = date('now')"
     ).get(userId, action);
-
     if (existing) {
       db.prepare(
         "UPDATE stats SET count = count + 1 WHERE user_id = ? AND action = ? AND date(created_at) = date('now')"
       ).run(userId, action);
     } else {
-      db.prepare(
-        'INSERT INTO stats (user_id, action, count) VALUES (?, ?, 1)'
-      ).run(userId, action);
+      db.prepare('INSERT INTO stats (user_id, action, count) VALUES (?, ?, 1)').run(userId, action);
     }
   },
-  
-  blockUser: (id) => db.prepare('UPDATE users SET blocked = 1 WHERE id = ?').run(id),
-  
-  banUser: (id) => db.prepare('UPDATE users SET is_banned = 1 WHERE id = ?').run(id),
-  
-  unbanUser: (id) => db.prepare('UPDATE users SET is_banned = 0 WHERE id = ?').run(id),
 
-  // ─── Majburiy obuna kanallari/guruhlari ───────────────────────────
+  // ─── Majburiy obuna kanallari ─────────────────────────────────────
   getRequiredChannels: () => db.prepare('SELECT * FROM required_channels ORDER BY id ASC').all(),
 
   addRequiredChannel: (channelId, title, type = 'channel') => {
     try {
       db.prepare(
         'INSERT INTO required_channels (channel_id, title, type) VALUES (?, ?, ?)'
-      ).run(channelId, title || '', type);
+      ).run(channelId, title || channelId, type);
       return true;
     } catch (e) {
-      return false; // UNIQUE constraint — allaqachon bor
+      // UNIQUE constraint — allaqachon bor
+      return false;
     }
   },
 
   removeRequiredChannel: (id) => {
     db.prepare('DELETE FROM required_channels WHERE id = ?').run(id);
+  },
+
+  // ─── Bot sozlamalari (kelajak uchun) ─────────────────────────────
+  getSetting: (key) => {
+    const row = db.prepare('SELECT value FROM bot_settings WHERE key = ?').get(key);
+    return row ? row.value : null;
+  },
+
+  setSetting: (key, value) => {
+    db.prepare('INSERT INTO bot_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
   },
 };
