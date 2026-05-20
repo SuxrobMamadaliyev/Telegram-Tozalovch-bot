@@ -95,6 +95,18 @@ module.exports = {
   }),
 
   getAllUsers: () => db.prepare('SELECT id, lang FROM users WHERE is_banned = 0').all(),
+
+  addStat: (userId, action) => {
+    db.prepare(`
+      INSERT INTO stats (user_id, action, count) VALUES (?, ?, 1)
+      ON CONFLICT DO NOTHING
+    `).run(userId, action);
+    // Agar mavjud bo'lsa count ni oshir
+    db.prepare(`
+      UPDATE stats SET count = count + 1
+      WHERE user_id = ? AND action = ? AND date(created_at) = date('now')
+    `).run(userId, action);
+  },
   
   blockUser: (id) => db.prepare('UPDATE users SET blocked = 1 WHERE id = ?').run(id),
   
