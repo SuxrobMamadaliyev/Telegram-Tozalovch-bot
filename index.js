@@ -88,14 +88,15 @@ async function subscribeKeyboard(lang) {
 // ─── Asosiy menyu tugmalari ──────────────────────────────────────────
 function mainMenuKeyboard(userId) {
   const l = L(userId);
+  // Emoji prefikslari qo'shilmaydi — languages.js da allaqachon bor
   return Markup.inlineKeyboard([
-    [Markup.button.callback('📢 ' + l.scan_channels, 'scan_channels'),
-     Markup.button.callback('👥 ' + l.scan_groups, 'scan_groups')],
-    [Markup.button.callback('🤖 ' + l.scan_bots, 'scan_bots'),
-     Markup.button.callback('🔍 ' + l.scan_all, 'scan_all')],
-    [Markup.button.callback('🔌 ' + l.disconnect, 'disconnect'),
-     Markup.button.callback('❓ ' + l.help, 'help')],
-    [Markup.button.callback('⚙️ ' + l.settings, 'settings')],
+    [Markup.button.callback(l.scan_channels, 'scan_channels'),
+     Markup.button.callback(l.scan_groups, 'scan_groups')],
+    [Markup.button.callback(l.scan_bots, 'scan_bots'),
+     Markup.button.callback(l.scan_all, 'scan_all')],
+    [Markup.button.callback(l.disconnect, 'disconnect'),
+     Markup.button.callback(l.help, 'help')],
+    [Markup.button.callback(l.settings, 'settings')],
   ]);
 }
 
