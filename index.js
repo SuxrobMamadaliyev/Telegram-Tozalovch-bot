@@ -323,11 +323,7 @@ async function showDialogPage(ctx, page) {
   ]);
 
   const keptCount = kept.length;
-  const text = l.found(total, typeName) + (keptCount > 0 ? `
-
-✅ *${keptCount}* ta saqlanadi` : '
-
-_Saqlamoqchi bo'lganlarni belgilang_');
+  const text = l.found(total, typeName) + (keptCount > 0 ? `\n\n✅ *${keptCount}* ta saqlanadi` : `\n\n_Saqlamoqchi bo'lganlarni belgilang_`);
 
   if (ctx.callbackQuery) {
     await ctx.editMessageText(text, {
