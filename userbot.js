@@ -186,7 +186,7 @@ class UserSession {
 
       if (matches) {
         results.push({
-          id: entity.id.toString(),
+          id: String(entity.id),
           title: dialog.title || entity.username || entity.firstName || 'Nomsiz',
           type: entityType,
           username: entity.username || '',
@@ -205,7 +205,7 @@ class UserSession {
       } catch (e) {
         // getEntity ishlamasa dialogs dan qidiramiz
         const dialogs = await this.client.getDialogs({ limit: 500 });
-        const found = dialogs.find(d => d.entity && d.entity.id && d.entity.id.toString() === id.toString());
+        const found = dialogs.find(d => d.entity && d.entity.id && String(d.entity.id) === String(id));
         if (!found) throw new Error(`Dialog topilmadi: ${id}`);
         entity = found.entity;
       }
