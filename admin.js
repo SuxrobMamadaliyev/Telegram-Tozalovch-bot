@@ -22,7 +22,7 @@ async function adminPanel(ctx) {
       ...Markup.inlineKeyboard([
         [Markup.button.callback('📨 Broadcast', 'admin_broadcast'), Markup.button.callback('📊 Statistika', 'admin_stats')],
         [Markup.button.callback('👥 Foydalanuvchilar', 'admin_users'), Markup.button.callback('🚫 Ban/Unban', 'admin_ban_menu')],
-        [Markup.button.callback('📢 Kanal tekshir', 'admin_check_channel'), Markup.button.callback('🔄 Yangilash', 'admin_refresh')],
+        [Markup.button.callback('📢 Obuna kanallari', 'admin_check_channel'), Markup.button.callback('🔄 Yangilash', 'admin_refresh')],
       ]),
     }
   );
@@ -53,6 +53,7 @@ async function showStats(ctx) {
 async function showUsers(ctx, page = 0) {
   await ctx.answerCbQuery().catch(() => {});
   const limit = 10;
+  // FIX #1: getAllUsersAdmin va getUserCount database.js ga qo'shildi
   const users = db.getAllUsersAdmin(limit, page * limit);
   const total = db.getUserCount();
 
@@ -128,7 +129,6 @@ async function handleBroadcast(ctx, text) {
       const msg = lines.slice(1).join('\n').trim();
       if (langs[langCode] && msg) messages[langCode] = msg;
     }
-    // Agar birorta til mos kelmasa — hammaga bir xil
     if (Object.keys(messages).length === 0) {
       for (const l of Object.keys(langs)) messages[l] = text;
     }
@@ -155,7 +155,6 @@ async function handleBroadcast(ctx, text) {
       failed++;
     }
 
-    // Har 10 tasida progress yangilash
     if ((i + 1) % 10 === 0) {
       await ctx.telegram.editMessageText(
         ctx.chat.id,
@@ -166,7 +165,7 @@ async function handleBroadcast(ctx, text) {
       ).catch(() => {});
     }
 
-    await new Promise(r => setTimeout(r, 50)); // Rate limit
+    await new Promise(r => setTimeout(r, 50));
   }
 
   await ctx.telegram.editMessageText(
@@ -180,6 +179,41 @@ async function handleBroadcast(ctx, text) {
   ctx.session.adminStep = null;
 }
 
+// ─── FIX #2: Majburiy obuna kanallari boshqaruvi ─────────────────────
+async function showChannelManager(ctx) {
+  await ctx.answerCbQuery().catch(() => {});
+  const channels = db.getRequiredChannels();
+
+  let text = `📢 *Majburiy Obuna Boshqaruvi*\n\n`;
+
+  if (channels.length === 0) {
+    text += `_Hozircha majburiy kanallar yo'q._\n\n`;
+  } else {
+    channels.forEach((ch, i) => {
+      const icon = ch.type === 'group' ? '👥' : '📢';
+      text += `${i + 1}. ${icon} ${ch.title || ch.channel_id} — \`${ch.channel_id}\`\n`;
+    });
+    text += '\n';
+  }
+
+  text += `➕ Kanal/guruh qo'shish uchun:\n\`/addchannel @username\`\n\nO'chirish uchun pastdagi tugmalardan foydalaning.`;
+
+  const removeButtons = channels.map(ch => [
+    Markup.button.callback(
+      `🗑 ${ch.title || ch.channel_id}`,
+      `admin_remove_channel_${ch.id}`
+    )
+  ]);
+
+  await ctx.editMessageText(text, {
+    parse_mode: 'Markdown',
+    ...Markup.inlineKeyboard([
+      ...removeButtons,
+      [Markup.button.callback('🔙 Ortga', 'admin_back')],
+    ]),
+  });
+}
+
 module.exports = {
   isAdmin,
   adminPanel,
@@ -188,4 +222,5 @@ module.exports = {
   banMenu,
   broadcastMenu,
   handleBroadcast,
+  showChannelManager,
 };
