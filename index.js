@@ -268,6 +268,8 @@ async function handleScan(ctx, type) {
   ctx.session.dialogs = dialogs;
   ctx.session.scanType = type;
   ctx.session.page = 0;
+  ctx.session.keptIds = [];
+  ctx.session.toLeave = [];
 
   await showDialogPage(ctx, 0);
 }
@@ -277,6 +279,7 @@ async function showDialogPage(ctx, page) {
   const id = ctx.from.id;
   const l = L(id);
   const dialogs = ctx.session?.dialogs || [];
+  const kept = ctx.session?.keptIds || []; // ✅ saqlanganlar
   const PAGE_SIZE = 8;
   const total = dialogs.length;
   const start = page * PAGE_SIZE;
@@ -291,25 +294,40 @@ async function showDialogPage(ctx, page) {
   };
   const typeName = typeNames[ctx.session?.scanType] || '';
 
-  const buttons = slice.map((d) => {
-    const icon = d.type === 'kanal' ? '📢' : d.type === 'guruh' ? '👥' : '🤖';
-    const label = `${icon} ${d.title.substring(0, 28)}`;
-    return [Markup.button.callback(label, `leave_one_${d.id}`)];
-  });
+  // 2 tadan 1 qatorda
+  const buttons = [];
+  for (let i = 0; i < slice.length; i += 2) {
+    const row = [];
+    for (let j = i; j < Math.min(i + 2, slice.length); j++) {
+      const d = slice[j];
+      const icon = d.type === 'kanal' ? '📢' : d.type === 'guruh' ? '👥' : '🤖';
+      const isKept = kept.includes(d.id);
+      const label = `${isKept ? '✅ ' : ''}${icon} ${d.title.substring(0, 18)}`;
+      row.push(Markup.button.callback(label, `keep_${d.id}`));
+    }
+    buttons.push(row);
+  }
 
   // Navigatsiya
   const navRow = [];
   if (page > 0) navRow.push(Markup.button.callback('⬅️', `page_${page - 1}`));
   navRow.push(Markup.button.callback(`${page + 1}/${Math.ceil(total / PAGE_SIZE)}`, 'noop'));
   if (end < total) navRow.push(Markup.button.callback('➡️', `page_${page + 1}`));
+  if (navRow.length) buttons.push(navRow);
 
-  buttons.push(navRow);
+  const leaveCount = dialogs.filter(d => !kept.includes(d.id)).length;
+  const leaveLabel = leaveCount > 0 ? `🗑 Chiqish (${leaveCount} ta)` : `🗑 ` + l.leave_all;
   buttons.push([
-    Markup.button.callback('🗑 ' + l.leave_all, 'leave_all'),
+    Markup.button.callback(leaveLabel, 'leave_all'),
     Markup.button.callback('🔙 ' + l.back, 'back_main'),
   ]);
 
-  const text = l.found(total, typeName);
+  const keptCount = kept.length;
+  const text = l.found(total, typeName) + (keptCount > 0 ? `
+
+✅ *${keptCount}* ta saqlanadi` : '
+
+_Saqlamoqchi bo'lganlarni belgilang_');
 
   if (ctx.callbackQuery) {
     await ctx.editMessageText(text, {
@@ -340,55 +358,50 @@ bot.action(/^page_(\d+)$/, async (ctx) => {
 
 bot.action('noop', (ctx) => ctx.answerCbQuery());
 
-// ─── Bittasidan chiqish ───────────────────────────────────────────────
-bot.action(/^leave_one_(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery('⏳ Chiqilmoqda...');
+// ─── Saqlash (✅ belgilash — bu kanalda qolaman)
+bot.action(/^keep_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
   const id = ctx.from.id;
-  const l = L(id);
   const dialogId = ctx.match[1];
+  ctx.session = ctx.session || {};
+  const kept = ctx.session.keptIds || [];
 
-  const userSession = await getOrRestoreSession(id);
-  if (!userSession) return ctx.reply(l.not_connected);
-
-  const dialogs = ctx.session?.dialogs || [];
-  const dialog = dialogs.find(d => d.id === dialogId);
-  const title = dialog?.title || dialogId;
-
-  try {
-    await userSession.leaveDialog(dialogId, dialog?.type);
-    // Ro'yxatdan o'chirish
-    ctx.session.dialogs = dialogs.filter(d => d.id !== dialogId);
-    await ctx.answerCbQuery(`✅ ${title} dan chiqildi!`);
-
-    if (ctx.session.dialogs.length === 0) {
-      await ctx.editMessageText('✅ Hammadan chiqildi!', { ...mainMenuKeyboard(id) });
-    } else {
-      await showDialogPage(ctx, ctx.session.page || 0);
-    }
-  } catch (err) {
-    await ctx.reply(l.error(err.message));
+  if (kept.includes(dialogId)) {
+    // Belgini olib tashlash
+    ctx.session.keptIds = kept.filter(k => k !== dialogId);
+  } else {
+    // Belgilash
+    ctx.session.keptIds = [...kept, dialogId];
   }
-});
 
+  await showDialogPage(ctx, ctx.session.page || 0);
+});
 // ─── Hammasidan chiqish ───────────────────────────────────────────────
 bot.action('leave_all', async (ctx) => {
   await ctx.answerCbQuery();
   const id = ctx.from.id;
   const l = L(id);
   const dialogs = ctx.session?.dialogs || [];
+  const kept = ctx.session?.keptIds || [];
 
-  if (dialogs.length === 0) return ctx.reply('❌ Ro\'yxat bo\'sh.');
+  const toLeave = dialogs.filter(d => !kept.includes(d.id));
+
+  if (toLeave.length === 0) {
+    await ctx.answerCbQuery("✅ Chiqiladigan yo'q, hammasi belgilangan!", { show_alert: true });
+    return;
+  }
 
   const userSession = await getOrRestoreSession(id);
   if (!userSession) return ctx.reply(l.not_connected);
 
-  // Tasdiqlash
+  ctx.session.toLeave = toLeave;
+
   await ctx.editMessageText(
-    `⚠️ *${dialogs.length}* ta dan chiqilsinmi?`,
+    `⚠️ *${toLeave.length}* ta dan chiqilsinmi?\n\n✅ *${kept.length}* ta saqlanib qoladi`,
     {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
-        [Markup.button.callback('✅ Ha, hammadan chiq', 'leave_all_confirm'),
+        [Markup.button.callback('✅ Ha, chiqish', 'leave_all_confirm'),
          Markup.button.callback('❌ Bekor', 'back_main')],
       ]),
     }
@@ -399,17 +412,17 @@ bot.action('leave_all_confirm', async (ctx) => {
   await ctx.answerCbQuery();
   const id = ctx.from.id;
   const l = L(id);
-  const dialogs = ctx.session?.dialogs || [];
+  const toLeave = ctx.session?.toLeave || ctx.session?.dialogs || [];
 
   const userSession = await getOrRestoreSession(id);
   if (!userSession) return ctx.reply(l.not_connected);
 
-  const progressMsg = await ctx.reply(l.leaving_all(dialogs.length), { parse_mode: 'Markdown' });
+  const progressMsg = await ctx.reply(l.leaving_all(toLeave.length), { parse_mode: 'Markdown' });
 
   let ok = 0, fail = 0;
 
-  for (let i = 0; i < dialogs.length; i++) {
-    const d = dialogs[i];
+  for (let i = 0; i < toLeave.length; i++) {
+    const d = toLeave[i];
     try {
       await userSession.leaveDialog(d.id, d.type);
       ok++;
@@ -417,19 +430,22 @@ bot.action('leave_all_confirm', async (ctx) => {
       fail++;
     }
 
-    // Progress yangilash (har 5 tasida)
-    if ((i + 1) % 5 === 0 || i === dialogs.length - 1) {
+    if ((i + 1) % 5 === 0 || i === toLeave.length - 1) {
       await ctx.telegram.editMessageText(
         id, progressMsg.message_id, null,
-        `⏳ Jarayon: *${i + 1}/${dialogs.length}*\n✔️ Muvaffaqiyatli: ${ok}\n❌ Xato: ${fail}`,
+        `⏳ Jarayon: *${i + 1}/${toLeave.length}*
+✔️ Muvaffaqiyatli: ${ok}
+❌ Xato: ${fail}`,
         { parse_mode: 'Markdown' }
       ).catch(() => {});
     }
 
-    await new Promise(r => setTimeout(r, 1200)); // Flood limit
+    await new Promise(r => setTimeout(r, 1200));
   }
 
   ctx.session.dialogs = [];
+  ctx.session.keptIds = [];
+  ctx.session.toLeave = [];
 
   await ctx.telegram.editMessageText(
     id, progressMsg.message_id, null,
