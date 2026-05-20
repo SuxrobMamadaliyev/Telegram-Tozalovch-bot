@@ -16,7 +16,6 @@ for (const key of REQUIRED) {
 }
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const REQUIRED_CHANNEL = process.env.REQUIRED_CHANNEL || '';
 const ADMIN_IDS = (process.env.ADMIN_IDS || '').split(',').map(Number).filter(Boolean);
 
 // ─── Bot ─────────────────────────────────────────────────────────────
@@ -39,7 +38,6 @@ async function getOrRestoreSession(userId) {
     if (s.isAuthorized()) return s;
   }
 
-  // DB dan session tiklash
   const saved = db.getSession(userId);
   if (saved) {
     const s = new UserSession(userId);
@@ -54,15 +52,37 @@ async function getOrRestoreSession(userId) {
   return null;
 }
 
-// ─── Obuna tekshirish ─────────────────────────────────────────────────
+// ─── FIX: Obuna tekshirish — DB dan majburiy kanallar olinadi ─────────
 async function checkSubscription(ctx) {
-  if (!REQUIRED_CHANNEL) return true;
-  try {
-    const member = await ctx.telegram.getChatMember(REQUIRED_CHANNEL, ctx.from.id);
-    return ['creator', 'administrator', 'member'].includes(member.status);
-  } catch {
-    return true; // Kanal topilmasa — ruxsat berish
+  const channels = db.getRequiredChannels();
+  if (channels.length === 0) return true;
+
+  for (const ch of channels) {
+    try {
+      const member = await ctx.telegram.getChatMember(ch.channel_id, ctx.from.id);
+      if (!['creator', 'administrator', 'member'].includes(member.status)) {
+        return false;
+      }
+    } catch {
+      // Kanal topilmasa yoki xato bo'lsa — o'tkazib yuborish
+    }
   }
+  return true;
+}
+
+// ─── Obuna tugmalari ─────────────────────────────────────────────────
+async function subscribeKeyboard(lang) {
+  const channels = db.getRequiredChannels();
+  const l = langs[lang] || langs['uz'];
+  const buttons = channels.map(ch => {
+    const link = ch.channel_id.startsWith('@')
+      ? `https://t.me/${ch.channel_id.replace('@', '')}`
+      : `https://t.me/c/${ch.channel_id}`;
+    const icon = ch.type === 'group' ? '👥' : '📢';
+    return [Markup.button.url(`${icon} ${ch.title || ch.channel_id}`, link)];
+  });
+  buttons.push([Markup.button.callback(l.check_sub, 'check_sub')]);
+  return Markup.inlineKeyboard(buttons);
 }
 
 // ─── Asosiy menyu tugmalari ──────────────────────────────────────────
@@ -94,20 +114,18 @@ function langKeyboard() {
 bot.start(async (ctx) => {
   const { id, first_name, last_name, username } = ctx.from;
 
-  // Ban tekshirish
   if (db.isBanned(id)) return ctx.reply(L(id).banned);
 
-  // DB ga saqlash
   db.saveUser(id, username, first_name, last_name, db.getLang(id) || 'uz');
 
-  // Obuna tekshirish
-  if (REQUIRED_CHANNEL && !(await checkSubscription(ctx))) {
+  if (!(await checkSubscription(ctx))) {
+    const lang = db.getLang(id) || 'uz';
+    const l = langs[lang] || langs['uz'];
+    const channels = db.getRequiredChannels();
+    const firstChannel = channels[0]?.channel_id || '';
     return ctx.reply(
-      L(id).subscribe_required(REQUIRED_CHANNEL),
-      Markup.inlineKeyboard([
-        [Markup.button.url('📢 Kanalga o\'tish', `https://t.me/${REQUIRED_CHANNEL.replace('@', '')}`)],
-        [Markup.button.callback(L(id).check_sub, 'check_sub')],
-      ])
+      l.subscribe_required(firstChannel),
+      await subscribeKeyboard(lang)
     );
   }
 
@@ -124,26 +142,22 @@ for (const code of ['uz', 'ru', 'en']) {
 
     const l = langs[code];
 
-    // Obuna tekshirish
-    if (REQUIRED_CHANNEL && !(await checkSubscription(ctx))) {
-      const channelLink = `https://t.me/${REQUIRED_CHANNEL.replace('@', '')}`;
-      const btnText = code === 'ru' ? 'Перейти в канал' : code === 'en' ? 'Go to channel' : "Kanalga o\'tish";
+    if (!(await checkSubscription(ctx))) {
+      const channels = db.getRequiredChannels();
+      const firstChannel = channels[0]?.channel_id || '';
       await ctx.editMessageText(
-        `✅ Til tanlandi: ${l.flag} *${l.name}*\n\n` + l.subscribe_required(REQUIRED_CHANNEL),
+        `✅ Til tanlandi: ${l.flag} *${l.name}*\n\n` + l.subscribe_required(firstChannel),
         {
           parse_mode: 'Markdown',
-          ...Markup.inlineKeyboard([
-            [Markup.button.url('📢 ' + btnText, channelLink)],
-            [Markup.button.callback(l.check_sub, 'check_sub')],
-          ]),
+          ...(await subscribeKeyboard(code)),
         }
       );
       return;
     }
 
-    const session = await getOrRestoreSession(id);
+    const userSess = await getOrRestoreSession(id);
 
-    if (session) {
+    if (userSess) {
       const savedSession = db.getSession(id);
       await ctx.editMessageText(
         l.already_connected(savedSession?.phone || ''),
@@ -171,9 +185,9 @@ bot.action('check_sub', async (ctx) => {
 
   if (await checkSubscription(ctx)) {
     await ctx.answerCbQuery('✅');
-    const session = await getOrRestoreSession(id);
+    const userSess = await getOrRestoreSession(id);
 
-    if (session) {
+    if (userSess) {
       const saved = db.getSession(id);
       await ctx.editMessageText(
         l.already_connected(saved?.phone || ''),
@@ -263,7 +277,6 @@ async function handleScan(ctx, type) {
     return ctx.reply(l.nothing(typeNames[type]), { parse_mode: 'Markdown', ...mainMenuKeyboard(id) });
   }
 
-  // Session ga saqlash
   ctx.session = ctx.session || {};
   ctx.session.dialogs = dialogs;
   ctx.session.scanType = type;
@@ -279,7 +292,7 @@ async function showDialogPage(ctx, page) {
   const id = ctx.from.id;
   const l = L(id);
   const dialogs = ctx.session?.dialogs || [];
-  const kept = ctx.session?.keptIds || []; // ✅ saqlanganlar
+  const kept = ctx.session?.keptIds || [];
   const PAGE_SIZE = 8;
   const total = dialogs.length;
   const start = page * PAGE_SIZE;
@@ -294,7 +307,6 @@ async function showDialogPage(ctx, page) {
   };
   const typeName = typeNames[ctx.session?.scanType] || '';
 
-  // 2 tadan 1 qatorda
   const buttons = [];
   for (let i = 0; i < slice.length; i += 2) {
     const row = [];
@@ -308,7 +320,6 @@ async function showDialogPage(ctx, page) {
     buttons.push(row);
   }
 
-  // Navigatsiya
   const navRow = [];
   if (page > 0) navRow.push(Markup.button.callback('⬅️', `page_${page - 1}`));
   navRow.push(Markup.button.callback(`${page + 1}/${Math.ceil(total / PAGE_SIZE)}`, 'noop'));
@@ -354,24 +365,22 @@ bot.action(/^page_(\d+)$/, async (ctx) => {
 
 bot.action('noop', (ctx) => ctx.answerCbQuery());
 
-// ─── Saqlash (✅ belgilash — bu kanalda qolaman)
+// ─── Saqlash (✅ belgilash)
 bot.action(/^keep_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  const id = ctx.from.id;
   const dialogId = ctx.match[1];
   ctx.session = ctx.session || {};
   const kept = ctx.session.keptIds || [];
 
   if (kept.includes(dialogId)) {
-    // Belgini olib tashlash
     ctx.session.keptIds = kept.filter(k => k !== dialogId);
   } else {
-    // Belgilash
     ctx.session.keptIds = [...kept, dialogId];
   }
 
   await showDialogPage(ctx, ctx.session.page || 0);
 });
+
 // ─── Hammasidan chiqish ───────────────────────────────────────────────
 bot.action('leave_all', async (ctx) => {
   await ctx.answerCbQuery();
@@ -390,6 +399,7 @@ bot.action('leave_all', async (ctx) => {
   const userSession = await getOrRestoreSession(id);
   if (!userSession) return ctx.reply(l.not_connected);
 
+  // FIX #6: toLeave session ga saqlanadi — aniq ro'yxat
   ctx.session.toLeave = toLeave;
 
   await ctx.editMessageText(
@@ -404,11 +414,17 @@ bot.action('leave_all', async (ctx) => {
   );
 });
 
+// FIX #6: leave_all_confirm — ctx.session.dialogs bilan almashtirish yo'q qilindi
 bot.action('leave_all_confirm', async (ctx) => {
   await ctx.answerCbQuery();
   const id = ctx.from.id;
   const l = L(id);
-  const toLeave = ctx.session?.toLeave || ctx.session?.dialogs || [];
+
+  // Faqat session.toLeave ishlatiladi — bo'sh bo'lsa xato xabari
+  const toLeave = ctx.session?.toLeave;
+  if (!toLeave || toLeave.length === 0) {
+    return ctx.reply('⚠️ Chiqiladigan dialoglar topilmadi. Iltimos qaytadan skaner qiling.');
+  }
 
   const userSession = await getOrRestoreSession(id);
   if (!userSession) return ctx.reply(l.not_connected);
@@ -429,9 +445,7 @@ bot.action('leave_all_confirm', async (ctx) => {
     if ((i + 1) % 5 === 0 || i === toLeave.length - 1) {
       await ctx.telegram.editMessageText(
         id, progressMsg.message_id, null,
-        `⏳ Jarayon: *${i + 1}/${toLeave.length}*
-✔️ Muvaffaqiyatli: ${ok}
-❌ Xato: ${fail}`,
+        `⏳ Jarayon: *${i + 1}/${toLeave.length}*\n✔️ Muvaffaqiyatli: ${ok}\n❌ Xato: ${fail}`,
         { parse_mode: 'Markdown' }
       ).catch(() => {});
     }
@@ -580,6 +594,21 @@ bot.action('admin_broadcast', async (ctx) => {
   await admin.broadcastMenu(ctx);
 });
 
+// FIX #2: admin_check_channel handler — majburiy obuna boshqaruvi
+bot.action('admin_check_channel', async (ctx) => {
+  if (!admin.isAdmin(ctx.from.id)) return ctx.answerCbQuery();
+  await admin.showChannelManager(ctx);
+});
+
+// ─── Kanal o'chirish ─────────────────────────────────────────────────
+bot.action(/^admin_remove_channel_(\d+)$/, async (ctx) => {
+  if (!admin.isAdmin(ctx.from.id)) return ctx.answerCbQuery();
+  await ctx.answerCbQuery();
+  const channelDbId = parseInt(ctx.match[1]);
+  db.removeRequiredChannel(channelDbId);
+  await admin.showChannelManager(ctx);
+});
+
 // ─── Admin buyruqlar ──────────────────────────────────────────────────
 bot.command('ban', async (ctx) => {
   if (!admin.isAdmin(ctx.from.id)) return;
@@ -608,6 +637,66 @@ bot.command('stats', async (ctx) => {
   );
 });
 
+// ─── /addchannel — majburiy obuna kanali/guruhi qo'shish ─────────────
+bot.command('addchannel', async (ctx) => {
+  if (!admin.isAdmin(ctx.from.id)) return;
+  const args = ctx.message.text.split(' ');
+  const channelId = args[1];
+  if (!channelId) {
+    return ctx.reply('❌ Format: /addchannel @username yoki /addchannel @username guruh_nomi');
+  }
+
+  const title = args.slice(2).join(' ') || channelId;
+
+  // Kanal yoki guruhligini aniqlash
+  let type = 'channel';
+  try {
+    const chat = await ctx.telegram.getChat(channelId);
+    if (chat.type === 'group' || chat.type === 'supergroup') type = 'group';
+    const chatTitle = chat.title || channelId;
+    const added = db.addRequiredChannel(channelId, chatTitle, type);
+    if (added) {
+      const icon = type === 'group' ? '👥' : '📢';
+      ctx.reply(`✅ ${icon} *${chatTitle}* majburiy obunaga qo'shildi.\n\nID: \`${channelId}\``, { parse_mode: 'Markdown' });
+    } else {
+      ctx.reply(`⚠️ Bu kanal/guruh allaqachon ro'yxatda bor.`);
+    }
+  } catch (e) {
+    // getChat ishlamasa ham qo'shish (bot kanalda admin bo'lmasa)
+    const added = db.addRequiredChannel(channelId, title, type);
+    if (added) {
+      ctx.reply(`✅ *${title}* majburiy obunaga qo'shildi.\n\n⚠️ Eslatma: Bot kanalda admin bo'lmasa obuna tekshirilmaydi.`, { parse_mode: 'Markdown' });
+    } else {
+      ctx.reply(`⚠️ Bu kanal/guruh allaqachon ro'yxatda bor.`);
+    }
+  }
+});
+
+// ─── /removechannel — majburiy obuna o'chirish ────────────────────────
+bot.command('removechannel', async (ctx) => {
+  if (!admin.isAdmin(ctx.from.id)) return;
+  const channels = db.getRequiredChannels();
+  if (channels.length === 0) {
+    return ctx.reply('📢 Majburiy kanallar ro\'yxati bo\'sh.');
+  }
+  let text = '📢 *Majburiy kanallar:*\n\n';
+  channels.forEach((ch, i) => {
+    const icon = ch.type === 'group' ? '👥' : '📢';
+    text += `${i + 1}. ${icon} ${ch.title || ch.channel_id} — ID: \`${ch.id}\`\n`;
+  });
+  text += `\nO'chirish: /delchannel <ID>`;
+  ctx.reply(text, { parse_mode: 'Markdown' });
+});
+
+bot.command('delchannel', async (ctx) => {
+  if (!admin.isAdmin(ctx.from.id)) return;
+  const args = ctx.message.text.split(' ');
+  const dbId = parseInt(args[1]);
+  if (!dbId) return ctx.reply('❌ Format: /delchannel <DB_ID>');
+  db.removeRequiredChannel(dbId);
+  ctx.reply(`✅ Kanal o'chirildi.`);
+});
+
 // ─── Matn xabarlari (step machine) ────────────────────────────────────
 bot.on('text', async (ctx) => {
   const id = ctx.from.id;
@@ -616,7 +705,6 @@ bot.on('text', async (ctx) => {
   db.updateActivity(id);
   ctx.session = ctx.session || {};
 
-  // ─── Admin broadcast ─────────────────────────────────────────────
   if (admin.isAdmin(id) && ctx.session.adminStep === 'waiting_broadcast') {
     ctx.session.adminStep = null;
     await admin.handleBroadcast(ctx, ctx.message.text);
@@ -626,7 +714,6 @@ bot.on('text', async (ctx) => {
   const step = ctx.session.step;
   const l = L(id);
 
-  // ─── Telefon raqam ───────────────────────────────────────────────
   if (step === 'waiting_phone') {
     const phone = ctx.message.text.trim();
     if (!/^\+?[0-9]{7,15}$/.test(phone)) {
@@ -662,7 +749,6 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // ─── SMS kod ─────────────────────────────────────────────────────
   if (step === 'waiting_code') {
     const code = ctx.message.text.trim();
     if (!/^\d{5,6}$/.test(code)) {
@@ -703,7 +789,6 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // ─── 2FA ─────────────────────────────────────────────────────────
   if (step === 'waiting_2fa') {
     const password = ctx.message.text.trim();
     const userSession = userSessions.get(id);
@@ -729,7 +814,6 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // ─── Boshqa xabar ────────────────────────────────────────────────
   const userSession = await getOrRestoreSession(id);
   if (userSession) {
     const saved = db.getSession(id);
@@ -776,7 +860,7 @@ app.listen(PORT, () => {
   console.log(`🌐 Server ishga tushdi: http://localhost:${PORT}`);
 });
 
-// ─── Keep-alive (Render uchun — free plan uxlamaydi) ─────────────────
+// ─── Keep-alive ───────────────────────────────────────────────────────
 if (process.env.RENDER_EXTERNAL_URL) {
   const cron = require('node-cron');
   const https = require('https');
