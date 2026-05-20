@@ -101,20 +101,15 @@ bot.start(async (ctx) => {
   db.saveUser(id, username, first_name, last_name, db.getLang(id) || 'uz');
 
   // Obuna tekshirish
-      // ... (oldingi kodlar)
   if (REQUIRED_CHANNEL && !(await checkSubscription(ctx))) {
     return ctx.reply(
       L(id).subscribe_required(REQUIRED_CHANNEL),
       Markup.inlineKeyboard([
-        // BU YERDA ORTIQCHA } BELGISI OLIB TASHLANDI
         [Markup.button.url('📢 Kanalga o\'tish', `https://t.me/${REQUIRED_CHANNEL.replace('@', '')}`)],
         [Markup.button.callback(L(id).check_sub, 'check_sub')],
       ])
     );
   }
-// ... (qolgan kodlar)
-
-
 
   const name = first_name || 'Foydalanuvchi';
   await ctx.reply(L(id).welcome(name), { parse_mode: 'Markdown', ...langKeyboard() });
@@ -128,6 +123,24 @@ for (const code of ['uz', 'ru', 'en']) {
     db.setLang(id, code);
 
     const l = langs[code];
+
+    // Obuna tekshirish
+    if (REQUIRED_CHANNEL && !(await checkSubscription(ctx))) {
+      const channelLink = `https://t.me/${REQUIRED_CHANNEL.replace('@', '')}`;
+      const btnText = code === 'ru' ? 'Перейти в канал' : code === 'en' ? 'Go to channel' : "Kanalga o\'tish";
+      await ctx.editMessageText(
+        `✅ Til tanlandi: ${l.flag} *${l.name}*\n\n` + l.subscribe_required(REQUIRED_CHANNEL),
+        {
+          parse_mode: 'Markdown',
+          ...Markup.inlineKeyboard([
+            [Markup.button.url('📢 ' + btnText, channelLink)],
+            [Markup.button.callback(l.check_sub, 'check_sub')],
+          ]),
+        }
+      );
+      return;
+    }
+
     const session = await getOrRestoreSession(id);
 
     if (session) {
@@ -153,11 +166,11 @@ for (const code of ['uz', 'ru', 'en']) {
 
 // ─── Obuna tekshirish callback ────────────────────────────────────────
 bot.action('check_sub', async (ctx) => {
-  await ctx.answerCbQuery();
   const id = ctx.from.id;
+  const l = L(id);
 
   if (await checkSubscription(ctx)) {
-    const l = L(id);
+    await ctx.answerCbQuery('✅');
     const session = await getOrRestoreSession(id);
 
     if (session) {
@@ -173,12 +186,13 @@ bot.action('check_sub', async (ctx) => {
           parse_mode: 'Markdown',
           ...Markup.inlineKeyboard([
             [Markup.button.callback('🔗 ' + l.connect_account, 'connect_account')],
+            [Markup.button.callback('❓ ' + l.help, 'help')],
           ]),
         }
       );
     }
   } else {
-    await ctx.answerCbQuery(L(id).not_subscribed, { show_alert: true });
+    await ctx.answerCbQuery(l.not_subscribed, { show_alert: true });
   }
 });
 
