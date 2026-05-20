@@ -292,8 +292,19 @@ async function handleScan(ctx, type) {
 async function showDialogPage(ctx, page) {
   const id = ctx.from.id;
   const l = L(id);
-  const dialogs = ctx.session?.dialogs || [];
-  const kept = ctx.session?.keptIds || [];
+  ctx.session = ctx.session || {};
+
+  // Session yo'qolgan bo'lsa (bot restart yoki uzoq kutish)
+  if (!ctx.session.dialogs || ctx.session.dialogs.length === 0) {
+    if (ctx.callbackQuery) await ctx.answerCbQuery().catch(() => {});
+    return ctx.reply(
+      '⚠️ Session muddati o\'tdi. Iltimos qaytadan skaner qiling.',
+      { ...mainMenuKeyboard(id) }
+    );
+  }
+
+  const dialogs = ctx.session.dialogs;
+  const kept = (ctx.session?.keptIds || []).map(String);
   const PAGE_SIZE = 8;
   const total = dialogs.length;
   const start = page * PAGE_SIZE;
@@ -314,7 +325,7 @@ async function showDialogPage(ctx, page) {
     for (let j = i; j < Math.min(i + 2, slice.length); j++) {
       const d = slice[j];
       const icon = d.type === 'kanal' ? '📢' : d.type === 'guruh' ? '👥' : '🤖';
-      const isKept = kept.includes(d.id);
+      const isKept = kept.includes(String(d.id));
       const label = `${isKept ? '✅ ' : ''}${icon} ${d.title.substring(0, 18)}`;
       row.push(Markup.button.callback(label, `keep_${d.id}`));
     }
@@ -327,7 +338,7 @@ async function showDialogPage(ctx, page) {
   if (end < total) navRow.push(Markup.button.callback('➡️', `page_${page + 1}`));
   if (navRow.length) buttons.push(navRow);
 
-  const leaveCount = dialogs.filter(d => !kept.includes(d.id)).length;
+  const leaveCount = dialogs.filter(d => !kept.includes(String(d.id))).length;
   const leaveLabel = leaveCount > 0 ? `🗑 Chiqish (${leaveCount} ta)` : `🗑 ` + l.leave_all;
   buttons.push([
     Markup.button.callback(leaveLabel, 'leave_all'),
@@ -369,9 +380,9 @@ bot.action('noop', (ctx) => ctx.answerCbQuery());
 // ─── Saqlash (✅ belgilash)
 bot.action(/^keep_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  const dialogId = ctx.match[1];
+  const dialogId = String(ctx.match[1]);
   ctx.session = ctx.session || {};
-  const kept = ctx.session.keptIds || [];
+  const kept = (ctx.session.keptIds || []).map(String);
 
   if (kept.includes(dialogId)) {
     ctx.session.keptIds = kept.filter(k => k !== dialogId);
@@ -388,9 +399,9 @@ bot.action('leave_all', async (ctx) => {
   const id = ctx.from.id;
   const l = L(id);
   const dialogs = ctx.session?.dialogs || [];
-  const kept = ctx.session?.keptIds || [];
+  const kept = (ctx.session?.keptIds || []).map(String);
 
-  const toLeave = dialogs.filter(d => !kept.includes(d.id));
+  const toLeave = dialogs.filter(d => !kept.includes(String(d.id)));
 
   if (toLeave.length === 0) {
     await ctx.answerCbQuery("✅ Chiqiladigan yo'q, hammasi belgilangan!", { show_alert: true });
@@ -415,16 +426,21 @@ bot.action('leave_all', async (ctx) => {
   );
 });
 
-// FIX #6: leave_all_confirm — ctx.session.dialogs bilan almashtirish yo'q qilindi
+// FIX #6: leave_all_confirm — session yo'qolsa qayta skanerlash taklif qilinadi
 bot.action('leave_all_confirm', async (ctx) => {
   await ctx.answerCbQuery();
   const id = ctx.from.id;
   const l = L(id);
 
-  // Faqat session.toLeave ishlatiladi — bo'sh bo'lsa xato xabari
+  ctx.session = ctx.session || {};
+
+  // Session yo'qolgan bo'lsa (bot restart yoki uzoq kutish)
   const toLeave = ctx.session?.toLeave;
   if (!toLeave || toLeave.length === 0) {
-    return ctx.reply('⚠️ Chiqiladigan dialoglar topilmadi. Iltimos qaytadan skaner qiling.');
+    return ctx.reply(
+      '⚠️ Session muddati o\'tdi yoki ma\'lumotlar yo\'qoldi.\n\nIltimos qaytadan skaner qiling.',
+      { ...mainMenuKeyboard(id) }
+    );
   }
 
   const userSession = await getOrRestoreSession(id);
